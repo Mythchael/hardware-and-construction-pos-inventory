@@ -2,17 +2,116 @@
 let inventory = [], salesHistory = [], activityLogs = [], usersList = [];
 let employees = [], departments = [], positions = [];
 let cart = [], editingItemId = null, editingEmpId = null;
+let currentUserPermissions = [];
+let editingUserId = null;
+let pendingVoidId = null; // NEW: Track which ID is being voided
 
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', () => {
-    fetchInventory();
-    fetchSales();
-    fetchDepts();     // Pre-fetch for lookups
-    fetchPositions(); // Pre-fetch for lookups
+    checkAuth();
 });
+
+// --- AUTHENTICATION ---
+async function checkAuth() {
+    try {
+        const res = await fetch('/api/check-auth');
+        if (res.ok) {
+            const data = await res.json();
+            document.getElementById('current-user-display').innerText = data.username;
+            currentUserPermissions = data.permissions || [];
+            showApp();
+        } else {
+            showLogin();
+        }
+    } catch (e) {
+        showLogin();
+    }
+}
+
+function showApp() {
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('app-wrapper').classList.remove('hidden');
+    
+    applyUserPermissions();
+    fetchInitialData();
+
+    if (currentUserPermissions.includes('dashboard')) {
+        switchTab('dashboard');
+    } else if (currentUserPermissions.length > 0) {
+        switchTab(currentUserPermissions[0]);
+    } else {
+        alert("You have no access permissions. Contact Admin.");
+        handleLogout();
+    }
+}
+
+function showLogin() {
+    document.getElementById('login-screen').classList.remove('hidden');
+    document.getElementById('app-wrapper').classList.add('hidden');
+}
+
+function applyUserPermissions() {
+    ['dashboard', 'inventory', 'pos', 'reports', 'activity', 'employees'].forEach(mod => {
+        const btn = document.getElementById(`btn-${mod}`);
+        if (btn) {
+            if (currentUserPermissions.includes(mod)) btn.classList.remove('hidden');
+            else btn.classList.add('hidden');
+        }
+    });
+}
+
+function fetchInitialData() {
+    const needsInventory = currentUserPermissions.some(p => ['inventory', 'pos', 'dashboard'].includes(p));
+    if (needsInventory) fetchInventory();
+
+    const needsSales = currentUserPermissions.some(p => ['reports', 'dashboard'].includes(p));
+    if (needsSales) fetchSales();
+
+    if (currentUserPermissions.includes('employees')) {
+        fetchEmployees().then(() => fetchUsers());
+        fetchDepts();
+        fetchPositions();
+    }
+
+    if (currentUserPermissions.includes('activity')) fetchLogs();
+}
+
+document.getElementById('login-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = document.getElementById('login-username').value;
+    const password = document.getElementById('login-password').value;
+    const errorMsg = document.getElementById('login-error');
+
+    try {
+        const res = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+
+        if (res.ok) {
+            const data = await res.json();
+            document.getElementById('current-user-display').innerText = data.username;
+            currentUserPermissions = data.permissions || [];
+            showApp();
+        } else {
+            errorMsg.classList.remove('hidden');
+        }
+    } catch (e) {
+        errorMsg.innerText = "Connection Error";
+        errorMsg.classList.remove('hidden');
+    }
+});
+
+async function handleLogout() {
+    await fetch('/api/logout', { method: 'POST' });
+    location.reload();
+}
 
 // --- NAVIGATION ---
 function switchTab(tabId) {
+    if (!currentUserPermissions.includes(tabId)) return;
+
     ['dashboard', 'inventory', 'pos', 'reports', 'activity', 'employees'].forEach(id => {
         const view = document.getElementById(`view-${id}`);
         const btn = document.getElementById(`btn-${id}`);
@@ -36,7 +135,6 @@ function switchTab(tabId) {
     if(tabId === 'reports') fetchSales();
     if(tabId === 'activity') fetchLogs();
     if(tabId === 'employees') { 
-        // Sync: Fetch employees first, then users to ensure names appear
         fetchEmployees().then(() => fetchUsers());
         fetchDepts(); 
         fetchPositions(); 
@@ -56,6 +154,124 @@ function switchEmpTab(subTab) {
     activeBtn.classList.add('border-slate-800', 'text-slate-800', 'font-bold');
 }
 
+// --- REPORTS LOGIC ---
+function renderSalesHistory() {
+    const tbody = document.getElementById('sales-history-body');
+    if(!tbody) return;
+    tbody.innerHTML = '';
+    const emptyMsg = document.getElementById('sales-empty-msg');
+    if (salesHistory.length === 0) {
+        if(emptyMsg) emptyMsg.classList.remove('hidden');
+    } else {
+        if(emptyMsg) emptyMsg.classList.add('hidden');
+        salesHistory.forEach(sale => {
+            const row = `
+                <tr class="hover:bg-gray-50 transition border-b border-gray-100">
+                    <td class="px-6 py-4 text-gray-500 text-xs">${sale.date}</td>
+                    <td class="px-6 py-4 text-gray-800 font-medium truncate max-w-xs" title="${sale.itemsSummary}">${sale.itemsSummary || "Items"}</td>
+                    <td class="px-6 py-4 text-right font-bold text-green-600">${formatMoney(sale.total)}</td>
+                    <td class="px-6 py-4 text-center">
+                        <button onclick="viewSaleDetails(${sale.id})" class="text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 p-2 rounded-full transition mr-2"><i class="fa-solid fa-eye"></i></button>
+                        <button onclick="voidSale(${sale.id})" class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-2 rounded-full transition"><i class="fa-solid fa-ban"></i></button>
+                    </td>
+                </tr>`;
+            tbody.innerHTML += row;
+        });
+    }
+}
+
+function viewSaleDetails(id) {
+    const sale = salesHistory.find(s => s.id === id);
+    if(sale) showReceipt(sale, false);
+}
+
+function voidSale(id) {
+    const sale = salesHistory.find(s => s.id === id);
+    if (sale) showReceipt(sale, true); // Opens receipt preview with "Confirm Void" button
+}
+
+// 1. Triggered by the "Confirm Void" button in the Receipt Modal
+function confirmVoid(id) {
+    pendingVoidId = id; // Store ID
+    
+    // Reset Modal State
+    document.getElementById('void-sup-user').value = '';
+    document.getElementById('void-sup-pass').value = '';
+    document.getElementById('void-error').classList.add('hidden');
+    document.getElementById('void-target-id').innerText = '#' + id;
+
+    // Show Modal with Animation
+    const modal = document.getElementById('void-modal');
+    modal.classList.remove('hidden');
+    setTimeout(() => { 
+        modal.classList.remove('opacity-0'); 
+        modal.querySelector('div').classList.remove('scale-95');
+    }, 10);
+}
+
+function closeVoidModal() {
+    const modal = document.getElementById('void-modal');
+    modal.classList.add('opacity-0'); 
+    modal.querySelector('div').classList.add('scale-95');
+    setTimeout(() => { 
+        modal.classList.add('hidden'); 
+        pendingVoidId = null;
+    }, 300);
+}
+
+// 2. Triggered by "Authorize Void" button in the new Modal
+async function processVoidAuth() {
+    if (!pendingVoidId) return;
+
+    const supUser = document.getElementById('void-sup-user').value;
+    const supPass = document.getElementById('void-sup-pass').value;
+    const errorMsg = document.getElementById('void-error');
+
+    if (!supUser || !supPass) {
+        errorMsg.innerText = "Please enter credentials";
+        errorMsg.classList.remove('hidden');
+        return;
+    }
+
+    try {
+        // Step A: Verify Supervisor
+        const verifyRes = await fetch('/api/verify-supervisor', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: supUser, password: supPass })
+        });
+
+        if (!verifyRes.ok) {
+            const err = await verifyRes.json();
+            errorMsg.innerText = err.error || "Authentication Failed";
+            errorMsg.classList.remove('hidden');
+            return; 
+        }
+
+        // Step B: Perform Void Action (Pass approvedBy)
+        const res = await fetch(`/api/sales/${pendingVoidId}/void`, { 
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ approvedBy: supUser }) // <--- NEW: Send Supervisor Name
+        });
+        
+        if (res.ok) {
+            showToast("Transaction Voided Successfully");
+            closeVoidModal(); 
+            closeReceipt();   
+            fetchSales();     
+            fetchInventory(); 
+        } else {
+            const data = await res.json();
+            showToast(data.error || "Error processing void", true);
+        }
+    } catch (e) {
+        console.error(e);
+        errorMsg.innerText = "Connection Error";
+        errorMsg.classList.remove('hidden');
+    }
+}
+
 // ==========================================
 // --- API CONNECTORS (CORE) ---
 // ==========================================
@@ -63,8 +279,9 @@ function switchEmpTab(subTab) {
 async function fetchInventory() {
     try {
         const res = await fetch('/api/inventory');
+        if(!res.ok) return handleAuthError(res);
         inventory = await res.json();
-        updateDashboard();
+        if(currentUserPermissions.includes('dashboard')) updateDashboard();
         renderInventory();
         renderPosItems();
     } catch (e) { console.error("Inventory Error:", e); }
@@ -73,8 +290,9 @@ async function fetchInventory() {
 async function fetchSales() {
     try {
         const res = await fetch('/api/sales');
+        if(!res.ok) return handleAuthError(res);
         salesHistory = await res.json();
-        updateDashboard();
+        if(currentUserPermissions.includes('dashboard')) updateDashboard();
         renderSalesHistory();
     } catch (e) { console.error("Sales Error:", e); }
 }
@@ -82,9 +300,14 @@ async function fetchSales() {
 async function fetchLogs() { 
     try {
         const res = await fetch('/api/logs');
+        if(!res.ok) return handleAuthError(res);
         activityLogs = await res.json();
         renderLogs();
     } catch (e) { console.error("Logs Error:", e); }
+}
+
+function handleAuthError(res) {
+    if (res.status === 401 || res.status === 403) handleLogout();
 }
 
 // ==========================================
@@ -341,21 +564,6 @@ function voidSale(id) {
     if (sale) showReceipt(sale, true);
 }
 
-async function confirmVoid(id) {
-    try {
-        const res = await fetch(`/api/sales/${id}/void`, { method: 'POST' });
-        if (res.ok) {
-            showToast("Transaction Voided.");
-            closeReceipt(); 
-            fetchSales(); 
-            fetchInventory(); 
-        } else {
-            const data = await res.json();
-            showToast(data.error || "Error", true);
-        }
-    } catch (e) { console.error(e); showToast("Connection Error", true); }
-}
-
 // --- ACTIVITY LOG LOGIC ---
 function renderLogs() {
     const tbody = document.getElementById('activity-log-body');
@@ -444,6 +652,20 @@ function showActivityModal(log, meta) {
                     <span class="text-gray-600 font-bold">Total Amount</span>
                     <span class="text-xl font-bold text-slate-800">${formatMoney(meta.total)}</span>
                 </div>`;
+            
+            // --- NEW: Display Supervisor Approval ---
+            if (meta.approvedBy) {
+                content += `
+                <div class="mt-4 bg-red-50 border border-red-100 rounded-lg p-3 flex items-start gap-3">
+                    <div class="bg-red-100 text-red-600 rounded-full p-1.5 mt-0.5">
+                        <i class="fa-solid fa-user-shield text-sm"></i>
+                    </div>
+                    <div>
+                        <p class="text-xs text-red-500 font-bold uppercase tracking-wide">Authorized By</p>
+                        <p class="text-gray-800 font-medium">${meta.approvedBy}</p>
+                    </div>
+                </div>`;
+            }
         }
     } else {
         // --- GENERIC VIEW (Employees, Inventory, Users) ---
@@ -497,6 +719,7 @@ function closeActivityModal() {
 async function fetchEmployees() {
     try {
         const res = await fetch('/api/employees');
+        if(!res.ok) return handleAuthError(res);
         employees = await res.json();
         
         // Update Employee Table
@@ -505,22 +728,26 @@ async function fetchEmployees() {
         // Update User Dropdown (Create User Form)
         const userDropdown = document.getElementById('user-employee-select');
         if (userDropdown) {
+            const currentSelection = userDropdown.value; // Store current selection
             userDropdown.innerHTML = '<option value="">-- Assign to Employee --</option>';
             employees.forEach(e => {
                 userDropdown.innerHTML += `<option value="${e.id}">${e.lname}, ${e.fname}</option>`;
             });
+            if (currentSelection) userDropdown.value = currentSelection; // Restore selection
         }
         
     } catch(e) { console.error(e); }
 }
 async function fetchDepts() {
     const res = await fetch('/api/departments');
+    if(!res.ok) return handleAuthError(res);
     departments = await res.json();
     renderOrgLists();
     populateDropdown('emp-dept', departments);
 }
 async function fetchPositions() {
     const res = await fetch('/api/positions');
+    if(!res.ok) return handleAuthError(res);
     positions = await res.json();
     renderOrgLists();
     populateDropdown('emp-pos', positions);
@@ -776,18 +1003,19 @@ async function deletePos(id) { if(confirm("Remove position?")) { await fetch(`/a
 
 // 6. SYSTEM USERS
 async function fetchUsers() {
-    const res = await fetch('/api/users');
-    usersList = await res.json();
-    
-    // Ensure we have employee data to map names. If not, fetch them.
+    // We check if employees are loaded first
     if(employees.length === 0) {
         await fetchEmployees();
     }
 
+    const res = await fetch('/api/users');
+    if(!res.ok) return handleAuthError(res);
+    usersList = await res.json();
+    
+    // RENDER USER LIST with Employee Name Join
     const tbody = document.getElementById('users-table-body');
     if(!tbody) return;
     
-    // RENDER USER LIST with Employee Name Join
     tbody.innerHTML = usersList.map(u => {
         // Link user to employee for display
         const emp = employees.find(e => e.id == u.employee_id);
@@ -800,13 +1028,16 @@ async function fetchUsers() {
             <td class="px-6 py-3 text-xs"><span class="bg-gray-100 px-2 py-1 rounded">${u.permissions.length} modules</span></td>
             <td class="px-6 py-3 flex gap-2">
                 <button onclick="viewUserDetails(${u.id})" class="text-blue-500 hover:text-blue-700" title="View Details"><i class="fa-solid fa-eye"></i></button>
+                <button onclick="editUser(${u.id})" class="text-orange-500 hover:text-orange-700" title="Edit User"><i class="fa-solid fa-pen"></i></button>
                 <button onclick="deleteUser(${u.id})" class="text-red-500" title="Delete User"><i class="fa-solid fa-trash"></i></button>
             </td>
         </tr>`;
     }).join('');
 }
 
-// User Creation Form with Employee Selection
+// User Creation/Edit Form with Employee Selection
+//let editingUserId = null; // Track user being edited
+
 document.getElementById('user-form')?.addEventListener('submit', async function(e) {
     e.preventDefault();
     const selectedPerms = Array.from(document.querySelectorAll('.perm-check:checked')).map(cb => cb.value);
@@ -816,24 +1047,100 @@ document.getElementById('user-form')?.addEventListener('submit', async function(
     
     const userData = { 
         username: document.getElementById('user-name').value, 
-        password: document.getElementById('user-pass').value, 
         permissions: selectedPerms,
         employee_id: empId ? parseInt(empId) : null // Ensure integer or null
     };
+
+    // Password logic: Only send if provided (for edits) or required (for new users)
+    const password = document.getElementById('user-pass').value;
+    if (password) {
+        userData.password = password;
+    } else if (!editingUserId) {
+        showToast("Password is required for new users", true);
+        return;
+    }
     
-    const res = await fetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(userData) });
+    let res;
+    if (editingUserId) {
+        // UPDATE Existing User
+        res = await fetch(`/api/users/${editingUserId}`, { 
+            method: 'PUT', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify(userData) 
+        });
+    } else {
+        // CREATE New User
+        res = await fetch('/api/users', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify(userData) 
+        });
+    }
+
     if(res.ok) { 
-        showToast("User Created"); 
+        showToast(editingUserId ? "User Updated" : "User Created"); 
         
         // Explicitly re-fetch both to ensure the join works correctly on the new row
         await fetchEmployees();
         await fetchUsers(); 
         
-        this.reset();
-        // Reset dropdown manually if needed, though reset() handles it
-        document.getElementById('user-employee-select').value = ""; 
+        resetUserForm();
+    } else {
+        const err = await res.json();
+        showToast(err.error || "Error saving user", true);
     }
 });
+
+function editUser(id) {
+    const user = usersList.find(u => u.id === id);
+    if (!user) return;
+
+    editingUserId = id;
+
+    // Populate Form
+    document.getElementById('user-name').value = user.username;
+    // Don't populate password for security, leave blank to keep existing
+    document.getElementById('user-pass').value = ""; 
+    document.getElementById('user-pass').placeholder = "(Leave blank to keep current)";
+    document.getElementById('user-employee-select').value = user.employee_id || "";
+
+    // Set Permissions Checkboxes
+    document.querySelectorAll('.perm-check').forEach(cb => {
+        cb.checked = user.permissions.includes(cb.value);
+    });
+
+    // Change Button Text
+    const btn = document.querySelector('#user-form button[type="submit"]');
+    btn.textContent = "Update User";
+    btn.classList.replace('bg-slate-800', 'bg-orange-600');
+    btn.classList.replace('hover:bg-slate-700', 'hover:bg-orange-700');
+
+    // Add Cancel Button if not exists
+    let cancelBtn = document.getElementById('user-cancel-btn');
+    if (!cancelBtn) {
+        cancelBtn = document.createElement('button');
+        cancelBtn.id = 'user-cancel-btn';
+        cancelBtn.type = 'button';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.className = 'w-full mt-2 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-4 rounded transition';
+        cancelBtn.onclick = resetUserForm;
+        btn.parentNode.appendChild(cancelBtn);
+    }
+}
+
+function resetUserForm() {
+    editingUserId = null;
+    document.getElementById('user-form').reset();
+    document.getElementById('user-pass').placeholder = "********";
+    
+    const btn = document.querySelector('#user-form button[type="submit"]');
+    btn.textContent = "Create User";
+    btn.classList.replace('bg-orange-600', 'bg-slate-800');
+    btn.classList.replace('hover:bg-orange-700', 'hover:bg-slate-700');
+
+    const cancelBtn = document.getElementById('user-cancel-btn');
+    if (cancelBtn) cancelBtn.remove();
+}
 
 async function deleteUser(id) { if(confirm("Delete user?")) { await fetch(`/api/users/${id}`, {method:'DELETE'}); fetchUsers(); } }
 
