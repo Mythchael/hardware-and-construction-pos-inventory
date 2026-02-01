@@ -1,87 +1,126 @@
-    <style>
-        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
-        /* Custom scrollbar for tables */
-        .scroller::-webkit-scrollbar { width: 6px; height: 6px; }
-        .scroller::-webkit-scrollbar-track { background: #f1f1f1; }
-        .scroller::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
-        .scroller::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-        
-        .fade-in { animation: fadeIn 0.3s ease-in-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+/* === BASE STYLES === */
+body { 
+    font-family: 'Inter', sans-serif; 
+    background-color: #f3f4f6; 
+}
 
-        .toast {
-            visibility: hidden;
-            min-width: 250px;
-            background-color: #333;
-            color: #fff;
-            text-align: center;
-            border-radius: 4px;
-            padding: 16px;
-            position: fixed;
-            z-index: 50;
-            left: 50%;
-            bottom: 30px;
-            transform: translateX(-50%);
-            font-size: 14px;
-        }
+/* === CUSTOM SCROLLBAR === */
+.scroller::-webkit-scrollbar { 
+    width: 6px; 
+    height: 6px; 
+}
+.scroller::-webkit-scrollbar-track { 
+    background: #f1f1f1; 
+}
+.scroller::-webkit-scrollbar-thumb { 
+    background: #cbd5e1; 
+    border-radius: 3px; 
+}
+.scroller::-webkit-scrollbar-thumb:hover { 
+    background: #94a3b8; 
+}
 
-        .toast.show {
-            visibility: visible;
-            animation: fadein 0.5s, fadeout 0.5s 2.5s;
-        }
+/* === ANIMATIONS === */
+.fade-in { 
+    animation: fadeIn 0.3s ease-in-out; 
+}
 
-        @keyframes fadein { from {bottom: 0; opacity: 0;} to {bottom: 30px; opacity: 1;} }
-        @keyframes fadeout { from {bottom: 30px; opacity: 1;} to {bottom: 0; opacity: 0;} }
+@keyframes fadeIn { 
+    from { opacity: 0; transform: translateY(10px); } 
+    to { opacity: 1; transform: translateY(0); } 
+}
 
-        /* Print Specific Styles for 80mm Thermal Paper */
-        @media print {
-            @page { margin: 0; size: auto; } /* Remove default browser margins */
-            
-            aside, main, #toast, header { display: none !important; }
-            
-            body { 
-                background-color: white; 
-                height: auto; 
-                overflow: visible; 
-                width: 80mm; /* Force width for thermal printer */
-                margin: 0;
-            }
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
 
-            #receipt-modal { 
-                position: static; 
-                width: 100%; 
-                height: auto; 
-                background: white; 
-                display: block !important; 
-                opacity: 1 !important;
-                z-index: 9999;
-                pointer-events: none;
-                padding: 0;
-                margin: 0;
-            }
+.animate-spin {
+    animation: spin 1s linear infinite;
+}
 
-            #receipt-content {
-                box-shadow: none;
-                border: none;
-                width: 100%; /* Fill the 80mm body */
-                max-width: 100%;
-                margin: 0;
-                padding: 2mm 0; /* Minimal padding */
-                transform: none !important;
-            }
-            
-            /* Typography adjustments for thermal print */
-            #receipt-content h2 { font-size: 1.2rem; margin-bottom: 5px; }
-            #receipt-content p { font-size: 0.9rem; }
-            
-            /* Expand the scrollable area to show all items */
-            #rec-items { 
-                max-height: none !important; 
-                overflow: visible !important; 
-                padding-right: 0 !important;
-            }
-            
-            /* Hide print buttons */
-            .no-print { display: none !important; }
-        }
-    </style>
+/* === NOTIFICATIONS (TOAST) === */
+.toast {
+    visibility: hidden;
+    min-width: 250px;
+    background-color: #333;
+    color: #fff;
+    text-align: center;
+    border-radius: 4px;
+    padding: 16px;
+    position: fixed;
+    z-index: 50;
+    left: 50%;
+    bottom: 30px;
+    transform: translateX(-50%);
+    font-size: 14px;
+}
+
+.toast.show {
+    visibility: visible;
+    animation: fadein 0.5s, fadeout 0.5s 2.5s;
+}
+
+@keyframes fadein { 
+    from { bottom: 0; opacity: 0; } 
+    to { bottom: 30px; opacity: 1; } 
+}
+
+@keyframes fadeout { 
+    from { bottom: 30px; opacity: 1; } 
+    to { bottom: 0; opacity: 0; } 
+}
+
+/* === THERMAL PRINTING (58mm/80mm) === */
+@media print {
+    @page { 
+        margin: 0; 
+        size: auto; 
+    } 
+    
+    body {
+        margin: 0;
+        padding: 0;
+        display: block !important;
+        background: white;
+    }
+    
+    /* Hide everything except the receipt */
+    aside, main, header, #toast, .no-print { 
+        display: none !important; 
+    }
+
+    /* Force the receipt to the absolute top-left */
+    #receipt-modal { 
+        position: absolute !important; 
+        top: 0 !important;
+        left: 0 !important;
+        width: 58mm; /* Adjust to 80mm if using larger paper */
+        height: auto;
+        display: block !important;
+        opacity: 1 !important;
+        visibility: visible !important;
+    }
+
+    #receipt-modal *, 
+    #receipt-content, 
+    #receipt-content * { 
+        visibility: visible !important; 
+    }
+
+    #receipt-content {
+        transform: none !important;
+        box-shadow: none !important;
+        border: none !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        width: 100% !important;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 12pt;
+        color: black;
+    }
+
+    #rec-items { 
+        max-height: none !important; 
+        overflow: visible !important; 
+    }
+}
