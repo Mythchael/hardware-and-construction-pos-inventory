@@ -4,7 +4,9 @@ let employees = [], departments = [], positions = [];
 let cart = [], editingItemId = null, editingEmpId = null;
 let currentUserPermissions = [];
 let editingUserId = null;
-let pendingVoidId = null; // NEW: Track which ID is being voided
+let pendingVoidId = null; 
+let salesChartInstance = null;
+let categoryChartInstance = null;
 
 // --- INITIALIZATION ---
 document.addEventListener('DOMContentLoaded', () => {
@@ -13,11 +15,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // --- AUTHENTICATION ---
 async function checkAuth() {
+    toggleLoading(true);
     try {
         const res = await fetch('/api/check-auth');
         if (res.ok) {
             const data = await res.json();
-            document.getElementById('current-user-display').innerText = data.username;
+            const displayText = data.displayName 
+                ? `${data.displayName} - ${data.username}` 
+                : data.username;
+                
+            document.getElementById('current-user-display').innerText = displayText;
             currentUserPermissions = data.permissions || [];
             showApp();
         } else {
@@ -25,6 +32,8 @@ async function checkAuth() {
         }
     } catch (e) {
         showLogin();
+    } finally {
+        toggleLoading(false);
     }
 }
 
@@ -68,6 +77,7 @@ function fetchInitialData() {
     if (needsSales) fetchSales();
 
     if (currentUserPermissions.includes('employees')) {
+        // Chain these to ensure data dependencies are met
         fetchEmployees().then(() => fetchUsers());
         fetchDepts();
         fetchPositions();
@@ -78,6 +88,7 @@ function fetchInitialData() {
 
 document.getElementById('login-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    toggleLoading(true);
     const username = document.getElementById('login-username').value;
     const password = document.getElementById('login-password').value;
     const errorMsg = document.getElementById('login-error');
@@ -91,7 +102,11 @@ document.getElementById('login-form')?.addEventListener('submit', async (e) => {
 
         if (res.ok) {
             const data = await res.json();
-            document.getElementById('current-user-display').innerText = data.username;
+            const displayText = data.displayName 
+                ? `${data.displayName} - ${data.username}` 
+                : data.username;
+                
+            document.getElementById('current-user-display').innerText = displayText;
             currentUserPermissions = data.permissions || [];
             showApp();
         } else {
@@ -100,6 +115,8 @@ document.getElementById('login-form')?.addEventListener('submit', async (e) => {
     } catch (e) {
         errorMsg.innerText = "Connection Error";
         errorMsg.classList.remove('hidden');
+    } finally {
+        toggleLoading(false);
     }
 });
 
@@ -131,6 +148,7 @@ function switchTab(tabId) {
         titleEl.innerText = titles[tabId] || 'BuildMaster';
     }
 
+    // Refresh data when switching tabs to ensure freshness
     if(tabId === 'inventory') fetchInventory();
     if(tabId === 'reports') fetchSales();
     if(tabId === 'activity') fetchLogs();
@@ -154,129 +172,199 @@ function switchEmpTab(subTab) {
     activeBtn.classList.add('border-slate-800', 'text-slate-800', 'font-bold');
 }
 
-// --- REPORTS LOGIC ---
-function renderSalesHistory() {
-    const tbody = document.getElementById('sales-history-body');
-    if(!tbody) return;
-    tbody.innerHTML = '';
-    const emptyMsg = document.getElementById('sales-empty-msg');
-    if (salesHistory.length === 0) {
-        if(emptyMsg) emptyMsg.classList.remove('hidden');
-    } else {
-        if(emptyMsg) emptyMsg.classList.add('hidden');
-        salesHistory.forEach(sale => {
-            const row = `
-                <tr class="hover:bg-gray-50 transition border-b border-gray-100">
-                    <td class="px-6 py-4 text-gray-500 text-xs">${sale.date}</td>
-                    <td class="px-6 py-4 text-gray-800 font-medium truncate max-w-xs" title="${sale.itemsSummary}">${sale.itemsSummary || "Items"}</td>
-                    <td class="px-6 py-4 text-right font-bold text-green-600">${formatMoney(sale.total)}</td>
-                    <td class="px-6 py-4 text-center">
-                        <button onclick="viewSaleDetails(${sale.id})" class="text-blue-500 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 p-2 rounded-full transition mr-2"><i class="fa-solid fa-eye"></i></button>
-                        <button onclick="voidSale(${sale.id})" class="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 p-2 rounded-full transition"><i class="fa-solid fa-ban"></i></button>
-                    </td>
-                </tr>`;
-            tbody.innerHTML += row;
-        });
-    }
-}
+// --- VISUAL ANALYTICS ---
 
-function viewSaleDetails(id) {
-    const sale = salesHistory.find(s => s.id === id);
-    if(sale) showReceipt(sale, false);
-}
+function initCharts() {
+    if (typeof Chart === 'undefined') return;
 
-function voidSale(id) {
-    const sale = salesHistory.find(s => s.id === id);
-    if (sale) showReceipt(sale, true); // Opens receipt preview with "Confirm Void" button
-}
-
-// 1. Triggered by the "Confirm Void" button in the Receipt Modal
-function confirmVoid(id) {
-    pendingVoidId = id; // Store ID
+    // Set default dates to Today
+    const today = new Date().toISOString().split('T')[0];
+    const trendDateEl = document.getElementById('chart-trend-date');
+    const catDateEl = document.getElementById('chart-cat-date');
     
-    // Reset Modal State
-    document.getElementById('void-sup-user').value = '';
-    document.getElementById('void-sup-pass').value = '';
-    document.getElementById('void-error').classList.add('hidden');
-    document.getElementById('void-target-id').innerText = '#' + id;
+    if (trendDateEl && !trendDateEl.value) trendDateEl.value = today;
+    if (catDateEl) catDateEl.value = today; // Optional: default to today or leave empty
 
-    // Show Modal with Animation
-    const modal = document.getElementById('void-modal');
-    modal.classList.remove('hidden');
-    setTimeout(() => { 
-        modal.classList.remove('opacity-0'); 
-        modal.querySelector('div').classList.remove('scale-95');
-    }, 10);
+    renderTrendChart();
+    renderCategoryChart(); // Defaults to "Current Inventory"
 }
 
-function closeVoidModal() {
-    const modal = document.getElementById('void-modal');
-    modal.classList.add('opacity-0'); 
-    modal.querySelector('div').classList.add('scale-95');
-    setTimeout(() => { 
-        modal.classList.add('hidden'); 
-        pendingVoidId = null;
-    }, 300);
-}
+// 1. DYNAMIC SALES TREND CHART
+function renderTrendChart() {
+    const ctx = document.getElementById('salesChart');
+    if (!ctx) return;
 
-// 2. Triggered by "Authorize Void" button in the new Modal
-async function processVoidAuth() {
-    if (!pendingVoidId) return;
+    const mode = document.getElementById('chart-trend-mode').value; // weekly, monthly, yearly
+    const dateInput = document.getElementById('chart-trend-date').value;
+    const anchorDate = dateInput ? new Date(dateInput) : new Date();
 
-    const supUser = document.getElementById('void-sup-user').value;
-    const supPass = document.getElementById('void-sup-pass').value;
-    const errorMsg = document.getElementById('void-error');
+    let labels = [];
+    let dataPoints = [];
+    let chartLabel = "";
 
-    if (!supUser || !supPass) {
-        errorMsg.innerText = "Please enter credentials";
-        errorMsg.classList.remove('hidden');
-        return;
-    }
-
-    try {
-        // Step A: Verify Supervisor
-        const verifyRes = await fetch('/api/verify-supervisor', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: supUser, password: supPass })
-        });
-
-        if (!verifyRes.ok) {
-            const err = await verifyRes.json();
-            errorMsg.innerText = err.error || "Authentication Failed";
-            errorMsg.classList.remove('hidden');
-            return; 
+    if (mode === 'weekly') {
+        chartLabel = "Daily Revenue (Selected Week)";
+        // Generate last 7 days ending on anchorDate
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date(anchorDate);
+            d.setDate(anchorDate.getDate() - i);
+            const dateStr = d.toLocaleDateString(); // Matches sale.date format generally
+            labels.push(d.toLocaleDateString('en-US', { weekday: 'short' })); // Mon, Tue...
+            
+            // Sum sales for this specific day
+            const dailyTotal = salesHistory
+                .filter(s => new Date(s.date).toLocaleDateString() === dateStr)
+                .reduce((sum, s) => sum + (parseFloat(s.total) || 0), 0);
+            dataPoints.push(dailyTotal);
         }
+    } else if (mode === 'monthly') {
+        chartLabel = `Daily Revenue (${anchorDate.toLocaleString('default', { month: 'long' })})`;
+        const year = anchorDate.getFullYear();
+        const month = anchorDate.getMonth(); // 0-11
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
 
-        // Step B: Perform Void Action (Pass approvedBy)
-        const res = await fetch(`/api/sales/${pendingVoidId}/void`, { 
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ approvedBy: supUser }) // <--- NEW: Send Supervisor Name
-        });
+        for (let day = 1; day <= daysInMonth; day++) {
+            labels.push(day); // 1, 2, 3...
+            
+            // Filter match: Year, Month, Day
+            const dailyTotal = salesHistory
+                .filter(s => {
+                    const d = new Date(s.date);
+                    return d.getFullYear() === year && d.getMonth() === month && d.getDate() === day;
+                })
+                .reduce((sum, s) => sum + (parseFloat(s.total) || 0), 0);
+            dataPoints.push(dailyTotal);
+        }
+    } else if (mode === 'yearly') {
+        chartLabel = `Monthly Revenue (${anchorDate.getFullYear()})`;
+        labels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
         
-        if (res.ok) {
-            showToast("Transaction Voided Successfully");
-            closeVoidModal(); 
-            closeReceipt();   
-            fetchSales();     
-            fetchInventory(); 
-        } else {
-            const data = await res.json();
-            showToast(data.error || "Error processing void", true);
+        for (let m = 0; m < 12; m++) {
+            const monthlyTotal = salesHistory
+                .filter(s => {
+                    const d = new Date(s.date);
+                    return d.getFullYear() === anchorDate.getFullYear() && d.getMonth() === m;
+                })
+                .reduce((sum, s) => sum + (parseFloat(s.total) || 0), 0);
+            dataPoints.push(monthlyTotal);
         }
-    } catch (e) {
-        console.error(e);
-        errorMsg.innerText = "Connection Error";
-        errorMsg.classList.remove('hidden');
     }
+
+    if (salesChartInstance) salesChartInstance.destroy();
+    salesChartInstance = new Chart(ctx.getContext('2d'), {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: chartLabel,
+                data: dataPoints,
+                borderColor: '#f59e0b',
+                backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                borderWidth: 2,
+                pointRadius: 3,
+                fill: true,
+                tension: 0.3
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: { y: { beginAtZero: true } }
+        }
+    });
 }
 
-// ==========================================
-// --- API CONNECTORS (CORE) ---
-// ==========================================
+// 2. DYNAMIC CATEGORY CHART (Switches between Inventory & Sales)
+function renderCategoryChart() {
+    const ctx = document.getElementById('categoryChart');
+    if (!ctx) return;
 
+    const dateInput = document.getElementById('chart-cat-date').value;
+    const labelEl = document.getElementById('cat-chart-label');
+    
+    let chartData = [];
+    let chartLabels = [];
+    let title = "";
+
+    // MODE A: Specific Date Selected -> Show SALES Categories
+    if (dateInput) {
+        title = `Sales Volume by Category (${dateInput})`;
+        labelEl.innerText = "Showing: Units Sold on selected date";
+        
+        const selectedDateStr = new Date(dateInput).toLocaleDateString();
+        
+        // 1. Get all sales for this date
+        const targetSales = salesHistory.filter(s => new Date(s.date).toLocaleDateString() === selectedDateStr);
+        
+        // 2. Extract items and count by category
+        let catMap = {};
+        targetSales.forEach(sale => {
+            (sale.details || []).forEach(item => {
+                // Find category from current inventory (fallback to 'Unknown')
+                // Note: If item was deleted from inventory, category might be lost. 
+                // Better approach: Store category in sale details (requires DB update). 
+                // For now, we look up ID in inventory.
+                const invItem = inventory.find(i => i.id === item.id) || inventory.find(i => i.name === item.name);
+                const cat = invItem ? invItem.category : "Discontinued";
+                
+                catMap[cat] = (catMap[cat] || 0) + item.qty;
+            });
+        });
+
+        chartLabels = Object.keys(catMap);
+        chartData = Object.values(catMap);
+
+        if (chartLabels.length === 0) {
+            chartLabels = ["No Sales"];
+            chartData = [1]; // Dummy for display
+        }
+
+    } 
+    // MODE B: No Date -> Show CURRENT INVENTORY
+    else {
+        title = "Current Stock Distribution";
+        labelEl.innerText = "Showing: Current Inventory Levels";
+        
+        chartLabels = [...new Set(inventory.map(item => item.category || "Other"))];
+        chartData = chartLabels.map(cat => 
+            inventory.filter(i => i.category === cat).length
+        );
+        
+        if (chartData.length === 0) {
+            chartLabels = ["Empty"];
+            chartData = [1];
+        }
+    }
+
+    if (categoryChartInstance) categoryChartInstance.destroy();
+    categoryChartInstance = new Chart(ctx.getContext('2d'), {
+        type: 'doughnut',
+        data: {
+            labels: chartLabels,
+            datasets: [{
+                data: chartData,
+                backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#64748b'],
+                borderWidth: 0
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'bottom', labels: { boxWidth: 12 } },
+                title: { display: true, text: title }
+            }
+        }
+    });
+}
+
+function resetCategoryChart() {
+    document.getElementById('chart-cat-date').value = "";
+    renderCategoryChart();
+}
+// --- API CONNECTORS (CORE) ---
 async function fetchInventory() {
+    toggleLoading(true);
     try {
         const res = await fetch('/api/inventory');
         if(!res.ok) return handleAuthError(res);
@@ -284,35 +372,38 @@ async function fetchInventory() {
         if(currentUserPermissions.includes('dashboard')) updateDashboard();
         renderInventory();
         renderPosItems();
-    } catch (e) { console.error("Inventory Error:", e); }
+    } catch (e) { console.error(e); }
+    finally { toggleLoading(false); }
 }
 
 async function fetchSales() {
+    toggleLoading(true);
     try {
         const res = await fetch('/api/sales');
         if(!res.ok) return handleAuthError(res);
         salesHistory = await res.json();
         if(currentUserPermissions.includes('dashboard')) updateDashboard();
         renderSalesHistory();
-    } catch (e) { console.error("Sales Error:", e); }
+    } catch (e) { console.error(e); }
+    finally { toggleLoading(false); }
 }
 
 async function fetchLogs() { 
+    toggleLoading(true);
     try {
         const res = await fetch('/api/logs');
         if(!res.ok) return handleAuthError(res);
         activityLogs = await res.json();
         renderLogs();
-    } catch (e) { console.error("Logs Error:", e); }
+    } catch (e) { console.error(e); }
+    finally { toggleLoading(false); }
 }
 
 function handleAuthError(res) {
     if (res.status === 401 || res.status === 403) handleLogout();
 }
 
-// ==========================================
 // --- DASHBOARD LOGIC ---
-// ==========================================
 function updateDashboard() {
     const totalItems = inventory.reduce((acc, item) => acc + (parseInt(item.stock) || 0), 0);
     const totalValue = inventory.reduce((acc, item) => acc + ((parseFloat(item.price) || 0) * (parseInt(item.stock) || 0)), 0);
@@ -344,11 +435,11 @@ function updateDashboard() {
             });
         }
     }
+
+    if (typeof Chart !== 'undefined') initCharts();
 }
 
-// ==========================================
 // --- INVENTORY MANAGEMENT ---
-// ==========================================
 function editItem(id) {
     const item = inventory.find(i => i.id === id);
     if (!item) return;
@@ -368,6 +459,7 @@ function editItem(id) {
 
 document.getElementById('inventory-form')?.addEventListener('submit', async function(e) {
     e.preventDefault();
+    toggleLoading(true);
     const itemData = {
         name: document.getElementById('inv-name').value,
         category: document.getElementById('inv-cat').value,
@@ -376,25 +468,29 @@ document.getElementById('inventory-form')?.addEventListener('submit', async func
         unit: document.getElementById('inv-unit').value
     };
 
-    if (editingItemId) {
-        await fetch(`/api/inventory/${editingItemId}`, {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(itemData)
-        });
-        showToast("Item updated successfully");
-        const btn = document.querySelector('#inventory-form button[type="submit"]');
-        if(btn) {
-            btn.innerHTML = '<i class="fa-solid fa-plus mr-2"></i> Add Item';
-            btn.className = "w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-2 px-4 rounded transition";
+    try {
+        if (editingItemId) {
+            await fetch(`/api/inventory/${editingItemId}`, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(itemData)
+            });
+            showToast("Item updated successfully");
+            const btn = document.querySelector('#inventory-form button[type="submit"]');
+            if(btn) {
+                btn.innerHTML = '<i class="fa-solid fa-plus mr-2"></i> Add Item';
+                btn.className = "w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-2 px-4 rounded transition";
+            }
+            editingItemId = null;
+        } else {
+            await fetch('/api/inventory', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(itemData)
+            });
+            showToast("Item added successfully");
         }
-        editingItemId = null;
-    } else {
-        await fetch('/api/inventory', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(itemData)
-        });
-        showToast("Item added successfully");
+        this.reset();
+        fetchInventory();
+    } finally {
+        toggleLoading(false);
     }
-    this.reset();
-    fetchInventory();
 });
 
 function renderInventory() {
@@ -434,13 +530,36 @@ function renderInventory() {
 
 async function deleteItem(id) {
     if(confirm("Delete this item?")) {
-        await fetch(`/api/inventory/${id}`, { method: 'DELETE' });
-        showToast("Deleted");
-        fetchInventory();
+        toggleLoading(true);
+        try {
+            await fetch(`/api/inventory/${id}`, { method: 'DELETE' });
+            showToast("Deleted");
+            fetchInventory();
+        } finally { toggleLoading(false); }
     }
 }
 
 // --- POS LOGIC ---
+async function processSale() {
+    if(!cart.length) return;
+    toggleLoading(true);
+    try {
+        const total = cart.reduce((acc, item) => acc + (item.price * item.qty), 0);
+        const cartDetails = JSON.parse(JSON.stringify(cart));
+        const res = await fetch('/api/checkout', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cart, total })
+        });
+        const result = await res.json();
+        if(result.success) {
+            cart = [];
+            renderCart();
+            fetchInventory();
+            showReceipt({ id: result.saleId, date: result.date, total, details: cartDetails }, false);
+            showToast("Sale Complete");
+        }
+    } finally { toggleLoading(false); }
+}
+
 function renderPosItems() {
     const grid = document.getElementById('pos-grid');
     if(!grid) return;
@@ -511,23 +630,6 @@ function updateCartQty(id, change) {
     renderCart();
 }
 
-async function processSale() {
-    if(!cart.length) return;
-    const total = cart.reduce((acc, item) => acc + (item.price * item.qty), 0);
-    const cartDetails = JSON.parse(JSON.stringify(cart));
-    const res = await fetch('/api/checkout', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cart, total })
-    });
-    const result = await res.json();
-    if(result.success) {
-        cart = [];
-        renderCart();
-        fetchInventory();
-        showReceipt({ id: result.saleId, date: result.date, total, details: cartDetails }, false);
-        showToast("Sale Complete");
-    }
-}
-
 // --- REPORTS LOGIC ---
 function renderSalesHistory() {
     const tbody = document.getElementById('sales-history-body');
@@ -562,6 +664,79 @@ function viewSaleDetails(id) {
 function voidSale(id) {
     const sale = salesHistory.find(s => s.id === id);
     if (sale) showReceipt(sale, true);
+}
+
+function confirmVoid(id) {
+    pendingVoidId = id;
+    document.getElementById('void-sup-user').value = '';
+    document.getElementById('void-sup-pass').value = '';
+    document.getElementById('void-error').classList.add('hidden');
+    document.getElementById('void-target-id').innerText = '#' + id;
+    const modal = document.getElementById('void-modal');
+    modal.classList.remove('hidden');
+    setTimeout(() => { 
+        modal.classList.remove('opacity-0'); 
+        modal.querySelector('div').classList.remove('scale-95');
+    }, 10);
+}
+
+function closeVoidModal() {
+    const modal = document.getElementById('void-modal');
+    modal.classList.add('opacity-0'); 
+    modal.querySelector('div').classList.add('scale-95');
+    setTimeout(() => { 
+        modal.classList.add('hidden'); 
+        pendingVoidId = null;
+    }, 300);
+}
+
+async function processVoidAuth() {
+    if (!pendingVoidId) return;
+    const supUser = document.getElementById('void-sup-user').value;
+    const supPass = document.getElementById('void-sup-pass').value;
+    const errorMsg = document.getElementById('void-error');
+
+    if (!supUser || !supPass) {
+        errorMsg.innerText = "Please enter credentials";
+        errorMsg.classList.remove('hidden');
+        return;
+    }
+
+    try {
+        const verifyRes = await fetch('/api/verify-supervisor', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: supUser, password: supPass })
+        });
+
+        if (!verifyRes.ok) {
+            const err = await verifyRes.json();
+            errorMsg.innerText = err.error || "Authentication Failed";
+            errorMsg.classList.remove('hidden');
+            return; 
+        }
+
+        const res = await fetch(`/api/sales/${pendingVoidId}/void`, { 
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ approvedBy: supUser }) 
+        });
+        
+        if (res.ok) {
+            showToast("Transaction Voided Successfully");
+            closeVoidModal(); 
+            closeReceipt();   
+            fetchSales();     
+            fetchInventory(); 
+        } else {
+            const data = await res.json();
+            showToast(data.error || "Error processing void", true);
+        }
+    } catch (e) {
+        console.error(e);
+        errorMsg.innerText = "Connection Error";
+        errorMsg.classList.remove('hidden');
+    }
 }
 
 // --- ACTIVITY LOG LOGIC ---
@@ -609,7 +784,6 @@ function viewLogDetails(index) {
     }
 }
 
-// Map database columns to readable labels for the viewer
 const keyMap = {
     'lname': 'Last Name', 'fname': 'First Name', 'mname': 'Middle Name',
     'addr_brgy': 'Barangay', 'addr_city': 'City', 'addr_prov': 'Province',
@@ -634,7 +808,6 @@ function showActivityModal(log, meta) {
     `;
 
     if (log.action.includes("Sale") || log.action.includes("Void")) {
-        // --- SALE / VOID VIEW ---
         content += `<div class="space-y-2">`;
         if (meta.items && Array.isArray(meta.items)) {
             meta.items.forEach(item => {
@@ -653,7 +826,6 @@ function showActivityModal(log, meta) {
                     <span class="text-xl font-bold text-slate-800">${formatMoney(meta.total)}</span>
                 </div>`;
             
-            // --- NEW: Display Supervisor Approval ---
             if (meta.approvedBy) {
                 content += `
                 <div class="mt-4 bg-red-50 border border-red-100 rounded-lg p-3 flex items-start gap-3">
@@ -668,16 +840,12 @@ function showActivityModal(log, meta) {
             }
         }
     } else {
-        // --- GENERIC VIEW (Employees, Inventory, Users) ---
         content += `<div class="grid grid-cols-2 gap-4">`;
         for (const [key, value] of Object.entries(meta)) {
-            if(key === "id" || key === "photo") continue; // Skip internal IDs and large photo paths
-            
-            // Format value for display
+            if(key === "id" || key === "photo") continue;
             let displayVal = value;
             if (key === 'permissions' && Array.isArray(value)) displayVal = value.join(', ');
             
-            // LOOKUP NAMES for Dept/Pos
             if (key === 'dept_id') {
                 const dept = departments.find(d => d.id == value);
                 displayVal = dept ? dept.name : value;
@@ -687,8 +855,7 @@ function showActivityModal(log, meta) {
                 displayVal = pos ? pos.name : value;
             }
             
-            const label = keyMap[key] || key; // Use readable label or fallback to key
-
+            const label = keyMap[key] || key; 
             content += `
                 <div class="bg-gray-50 p-3 rounded border border-gray-100">
                     <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">${label}</div>
@@ -715,29 +882,28 @@ function closeActivityModal() {
 // --- EMPLOYEE MANAGEMENT LOGIC ---
 // ==========================================
 
-// 1. DATA FETCHING
 async function fetchEmployees() {
+    toggleLoading(true);
     try {
         const res = await fetch('/api/employees');
         if(!res.ok) return handleAuthError(res);
         employees = await res.json();
         
-        // Update Employee Table
         renderEmployeeTable();
         
-        // Update User Dropdown (Create User Form)
         const userDropdown = document.getElementById('user-employee-select');
         if (userDropdown) {
-            const currentSelection = userDropdown.value; // Store current selection
+            const currentSelection = userDropdown.value; 
             userDropdown.innerHTML = '<option value="">-- Assign to Employee --</option>';
             employees.forEach(e => {
                 userDropdown.innerHTML += `<option value="${e.id}">${e.lname}, ${e.fname}</option>`;
             });
-            if (currentSelection) userDropdown.value = currentSelection; // Restore selection
+            if (currentSelection) userDropdown.value = currentSelection; 
         }
-        
     } catch(e) { console.error(e); }
+    finally { toggleLoading(false); }
 }
+
 async function fetchDepts() {
     const res = await fetch('/api/departments');
     if(!res.ok) return handleAuthError(res);
@@ -745,6 +911,7 @@ async function fetchDepts() {
     renderOrgLists();
     populateDropdown('emp-dept', departments);
 }
+
 async function fetchPositions() {
     const res = await fetch('/api/positions');
     if(!res.ok) return handleAuthError(res);
@@ -752,6 +919,7 @@ async function fetchPositions() {
     renderOrgLists();
     populateDropdown('emp-pos', positions);
 }
+
 function populateDropdown(id, data) {
     const sel = document.getElementById(id);
     if(!sel) return;
@@ -761,19 +929,17 @@ function populateDropdown(id, data) {
     if(currentVal) sel.value = currentVal;
 }
 
-// 2. RENDERING LISTS
 function renderEmployeeTable() {
     const tbody = document.getElementById('employee-table-body');
     if(!tbody) return;
     tbody.innerHTML = '';
     
     employees.forEach(emp => {
-        const photoSrc = emp.photo ? emp.photo : 'https://via.placeholder.com/40?text=IMG';
-        
+        const photoSrc = emp.photo ? emp.photo : 'lib/placeholder.png'; // Updated placeholder
         const row = `
         <tr class="hover:bg-gray-50 border-b border-gray-100 transition">
-            <td class="px-6 py-3">
-                <img src="${photoSrc}" class="w-10 h-10 rounded-full object-cover border border-gray-200 bg-gray-100">
+            <td class="px-6 py-3 text-center">
+                <img src="${photoSrc}" class="w-10 h-10 rounded-full mx-auto object-cover border border-gray-200 bg-gray-100">
             </td>
             <td class="px-6 py-3 font-medium text-gray-800">${emp.lname}, ${emp.fname}</td>
             <td class="px-6 py-3 text-gray-600 text-xs">${emp.dept_name || '-'}</td>
@@ -814,7 +980,6 @@ function renderOrgLists() {
     }
 }
 
-// 3. ADD/EDIT EMPLOYEE LOGIC
 function openEmployeeModal() {
     editingEmpId = null;
     document.getElementById('employee-form').reset();
@@ -846,14 +1011,8 @@ function previewImage(input) {
     }
 }
 
-const empFieldMap = {
-    'lname': 'emp-lname', 'fname': 'emp-fname', 'mname': 'emp-mname',
-    'addr_brgy': 'emp-addr-brgy', 'addr_city': 'emp-addr-city', 'addr_prov': 'emp-addr-prov',
-    'philhealth': 'emp-philhealth', 'pagibig': 'emp-pagibig', 'sss': 'emp-sss',
-    'mobile': 'emp-mobile', 'email': 'emp-email', 'civil_status': 'emp-civil', 'dob': 'emp-dob'
-};
-
 async function saveEmployee() {
+    toggleLoading(true);
     const formData = new FormData();
     for (const [dbField, htmlId] of Object.entries(empFieldMap)) {
         const el = document.getElementById(htmlId);
@@ -886,10 +1045,11 @@ async function saveEmployee() {
             showToast(data.error || "Error saving record", true);
         }
     } catch(e) { console.error(e); }
+    finally { toggleLoading(false); } 
 }
 
 function editEmployee(id) {
-    const emp = employees.find(e => e.id == id); // Use == for safe type comparison
+    const emp = employees.find(e => e.id == id);
     if (!emp) return; 
     
     openEmployeeModal();
@@ -916,20 +1076,15 @@ async function deleteEmployee(id) {
     }
 }
 
-// 4. VIEW EMPLOYEE MODAL (Using Detailed Format from Activity Log)
 function viewEmployee(id) {
-    // Ensure ID comparison is safe
     const emp = employees.find(e => e.id == id);
-    if (!emp) return console.error("Employee not found for view:", id);
+    if (!emp) return;
 
     const modal = document.getElementById('view-emp-modal');
     const content = document.getElementById('view-emp-content');
-    
-    const photoSrc = emp.photo || 'https://via.placeholder.com/150';
+    const photoSrc = emp.photo || 'lib/placeholder.png'; // Use local placeholder
 
-    // Build the content for the modal using the keyMap and empFieldMap logic
     let detailsHtml = '';
-    // We iterate over the keyMap to display the fields in a readable way, similar to showActivityModal
     const fieldsToDisplay = [
         'dept_id', 'pos_id', 'mobile', 'email', 'addr_brgy', 'addr_city', 'addr_prov', 
         'civil_status', 'dob', 'sss', 'philhealth', 'pagibig'
@@ -938,8 +1093,6 @@ function viewEmployee(id) {
     fieldsToDisplay.forEach(key => {
         let value = emp[key];
         let label = keyMap[key] || key;
-
-        // Lookup names for Dept/Pos
         if (key === 'dept_id') {
             const dept = departments.find(d => d.id == value);
             value = dept ? dept.name : (value || '-');
@@ -948,7 +1101,6 @@ function viewEmployee(id) {
             const pos = positions.find(p => p.id == value);
             value = pos ? pos.name : (value || '-');
         }
-        
         detailsHtml += `
             <div class="bg-gray-50 p-3 rounded border border-gray-100">
                 <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">${label}</div>
@@ -971,10 +1123,10 @@ function viewEmployee(id) {
             </div>
         </div>
     `;
-
     modal.classList.remove('hidden');
     setTimeout(() => { modal.classList.remove('opacity-0'); modal.children[0].classList.remove('scale-95'); }, 10);
 }
+
 function closeViewEmpModal() {
     const modal = document.getElementById('view-emp-modal');
     modal.classList.add('opacity-0');
@@ -982,7 +1134,6 @@ function closeViewEmpModal() {
     setTimeout(() => modal.classList.add('hidden'), 300);
 }
 
-// 5. ORG (DEPT/POS) LOGIC
 async function addDepartment() {
     const name = document.getElementById('new-dept-name').value;
     if(!name) return;
@@ -1001,75 +1152,59 @@ async function addPosition() {
 }
 async function deletePos(id) { if(confirm("Remove position?")) { await fetch(`/api/positions/${id}`, {method:'DELETE'}); fetchPositions(); } }
 
-// 6. SYSTEM USERS
 async function fetchUsers() {
-    // We check if employees are loaded first
-    if(employees.length === 0) {
-        await fetchEmployees();
-    }
-
-    const res = await fetch('/api/users');
-    if(!res.ok) return handleAuthError(res);
-    usersList = await res.json();
-    
-    // RENDER USER LIST with Employee Name Join
-    const tbody = document.getElementById('users-table-body');
-    if(!tbody) return;
-    
-    tbody.innerHTML = usersList.map(u => {
-        // Link user to employee for display
-        const emp = employees.find(e => e.id == u.employee_id);
-        const empName = emp ? `${emp.lname}, ${emp.fname}` : '<span class="text-gray-400 italic">Unassigned</span>';
+    toggleLoading(true);
+    try {
+        if(employees.length === 0) await fetchEmployees();
+        const res = await fetch('/api/users');
+        if(!res.ok) return handleAuthError(res);
+        usersList = await res.json();
         
-        return `
-        <tr class="border-b border-gray-100">
-            <td class="px-6 py-3">${empName}</td>
-            <td class="px-6 py-3 font-bold">${u.username}</td>
-            <td class="px-6 py-3 text-xs"><span class="bg-gray-100 px-2 py-1 rounded">${u.permissions.length} modules</span></td>
-            <td class="px-6 py-3 flex gap-2">
-                <button onclick="viewUserDetails(${u.id})" class="text-blue-500 hover:text-blue-700" title="View Details"><i class="fa-solid fa-eye"></i></button>
-                <button onclick="editUser(${u.id})" class="text-orange-500 hover:text-orange-700" title="Edit User"><i class="fa-solid fa-pen"></i></button>
-                <button onclick="deleteUser(${u.id})" class="text-red-500" title="Delete User"><i class="fa-solid fa-trash"></i></button>
-            </td>
-        </tr>`;
-    }).join('');
+        const tbody = document.getElementById('users-table-body');
+        if(!tbody) return;
+        
+        tbody.innerHTML = usersList.map(u => {
+            const emp = employees.find(e => e.id == u.employee_id);
+            const empName = emp ? `${emp.lname}, ${emp.fname}` : '<span class="text-gray-400 italic">Unassigned</span>';
+            return `
+            <tr class="border-b border-gray-100">
+                <td class="px-6 py-3">${empName}</td>
+                <td class="px-6 py-3 font-bold">${u.username}</td>
+                <td class="px-6 py-3 text-xs"><span class="bg-gray-100 px-2 py-1 rounded">${u.permissions.length} modules</span></td>
+                <td class="px-6 py-3 flex gap-2">
+                    <button onclick="viewUserDetails(${u.id})" class="text-blue-500 hover:text-blue-700" title="View Details"><i class="fa-solid fa-eye"></i></button>
+                    <button onclick="editUser(${u.id})" class="text-orange-500 hover:text-orange-700" title="Edit User"><i class="fa-solid fa-pen"></i></button>
+                    <button onclick="deleteUser(${u.id})" class="text-red-500" title="Delete User"><i class="fa-solid fa-trash"></i></button>
+                </td>
+            </tr>`;
+        }).join('');
+    } finally { toggleLoading(false); }
 }
-
-// User Creation/Edit Form with Employee Selection
-//let editingUserId = null; // Track user being edited
 
 document.getElementById('user-form')?.addEventListener('submit', async function(e) {
     e.preventDefault();
     const selectedPerms = Array.from(document.querySelectorAll('.perm-check:checked')).map(cb => cb.value);
-    
-    // Get selected employee ID
     const empId = document.getElementById('user-employee-select').value;
-    
     const userData = { 
         username: document.getElementById('user-name').value, 
         permissions: selectedPerms,
-        employee_id: empId ? parseInt(empId) : null // Ensure integer or null
+        employee_id: empId ? parseInt(empId) : null 
     };
-
-    // Password logic: Only send if provided (for edits) or required (for new users)
     const password = document.getElementById('user-pass').value;
-    if (password) {
-        userData.password = password;
-    } else if (!editingUserId) {
+    if (password) userData.password = password;
+    else if (!editingUserId) {
         showToast("Password is required for new users", true);
         return;
     }
     
     let res;
     if (editingUserId) {
-        // UPDATE Existing User
         res = await fetch(`/api/users/${editingUserId}`, { 
             method: 'PUT', 
             headers: { 'Content-Type': 'application/json' }, 
             body: JSON.stringify(userData) 
         });
     } else {
-        // CREATE New User
         res = await fetch('/api/users', { 
             method: 'POST', 
             headers: { 'Content-Type': 'application/json' }, 
@@ -1079,11 +1214,8 @@ document.getElementById('user-form')?.addEventListener('submit', async function(
 
     if(res.ok) { 
         showToast(editingUserId ? "User Updated" : "User Created"); 
-        
-        // Explicitly re-fetch both to ensure the join works correctly on the new row
         await fetchEmployees();
         await fetchUsers(); 
-        
         resetUserForm();
     } else {
         const err = await res.json();
@@ -1094,28 +1226,19 @@ document.getElementById('user-form')?.addEventListener('submit', async function(
 function editUser(id) {
     const user = usersList.find(u => u.id === id);
     if (!user) return;
-
     editingUserId = id;
-
-    // Populate Form
     document.getElementById('user-name').value = user.username;
-    // Don't populate password for security, leave blank to keep existing
     document.getElementById('user-pass').value = ""; 
     document.getElementById('user-pass').placeholder = "(Leave blank to keep current)";
     document.getElementById('user-employee-select').value = user.employee_id || "";
-
-    // Set Permissions Checkboxes
     document.querySelectorAll('.perm-check').forEach(cb => {
         cb.checked = user.permissions.includes(cb.value);
     });
-
-    // Change Button Text
     const btn = document.querySelector('#user-form button[type="submit"]');
     btn.textContent = "Update User";
     btn.classList.replace('bg-slate-800', 'bg-orange-600');
     btn.classList.replace('hover:bg-slate-700', 'hover:bg-orange-700');
-
-    // Add Cancel Button if not exists
+    
     let cancelBtn = document.getElementById('user-cancel-btn');
     if (!cancelBtn) {
         cancelBtn = document.createElement('button');
@@ -1132,61 +1255,41 @@ function resetUserForm() {
     editingUserId = null;
     document.getElementById('user-form').reset();
     document.getElementById('user-pass').placeholder = "********";
-    
     const btn = document.querySelector('#user-form button[type="submit"]');
     btn.textContent = "Create User";
     btn.classList.replace('bg-orange-600', 'bg-slate-800');
     btn.classList.replace('hover:bg-orange-700', 'hover:bg-slate-700');
-
     const cancelBtn = document.getElementById('user-cancel-btn');
     if (cancelBtn) cancelBtn.remove();
 }
 
 async function deleteUser(id) { if(confirm("Delete user?")) { await fetch(`/api/users/${id}`, {method:'DELETE'}); fetchUsers(); } }
 
-// NEW: View System User Details Modal
 function viewUserDetails(id) {
     const user = usersList.find(u => u.id === id);
     if(!user) return;
-    
     const modal = document.getElementById('view-user-modal');
     const content = document.getElementById('view-user-content');
     const emp = employees.find(e => e.id == user.employee_id);
-    
     const empDisplay = emp ? `
         <div class="flex items-center gap-3 mb-4 bg-blue-50 p-3 rounded border border-blue-100">
-            <img src="${emp.photo || 'https://via.placeholder.com/40'}" class="w-10 h-10 rounded-full object-cover">
+            <img src="${emp.photo || 'lib/placeholder.png'}" class="w-10 h-10 rounded-full object-cover">
             <div>
                 <div class="font-bold text-slate-800">${emp.lname}, ${emp.fname}</div>
                 <div class="text-xs text-blue-600">${emp.pos_name || 'No Position'} - ${emp.dept_name || 'No Dept'}</div>
             </div>
         </div>
     ` : `<div class="p-3 bg-gray-100 rounded text-gray-500 text-center text-sm mb-4">No Employee Assigned</div>`;
-
     const permsDisplay = user.permissions.map(p => 
         `<span class="bg-gray-100 text-gray-600 text-xs px-2 py-1 rounded border border-gray-200">${p}</span>`
     ).join(' ');
-
     content.innerHTML = `
         ${empDisplay}
         <div class="grid grid-cols-2 gap-4 text-sm">
-            <div>
-                <span class="block text-xs text-gray-500 uppercase">Username</span>
-                <span class="font-mono font-bold text-lg">${user.username}</span>
-            </div>
-            <div>
-                <span class="block text-xs text-gray-500 uppercase">System ID</span>
-                <span class="font-mono">#${user.id}</span>
-            </div>
+            <div><span class="block text-xs text-gray-500 uppercase">Username</span><span class="font-mono font-bold text-lg">${user.username}</span></div>
+            <div><span class="block text-xs text-gray-500 uppercase">System ID</span><span class="font-mono">#${user.id}</span></div>
         </div>
-        <div class="mt-4">
-            <span class="block text-xs text-gray-500 uppercase mb-2">Access Permissions</span>
-            <div class="flex flex-wrap gap-2">
-                ${permsDisplay}
-            </div>
-        </div>
-    `;
-
+        <div class="mt-4"><span class="block text-xs text-gray-500 uppercase mb-2">Access Permissions</span><div class="flex flex-wrap gap-2">${permsDisplay}</div></div>`;
     modal.classList.remove('hidden');
     setTimeout(() => { modal.classList.remove('opacity-0'); modal.children[0].classList.remove('scale-95'); }, 10);
 }
@@ -1198,9 +1301,16 @@ function closeViewUserModal() {
     setTimeout(() => modal.classList.add('hidden'), 300);
 }
 
-// --- HELPERS ---
-function formatMoney(amount) { return '₱' + (parseFloat(amount) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+// --- HELPER FUNCTIONS ---
+function toggleLoading(show) {
+    const loader = document.getElementById('loading-overlay');
+    if(loader) show ? loader.classList.remove('hidden') : loader.classList.add('hidden');
+}
+
+function formatMoney(amount) { return '₱' + (parseFloat(amount) || 0).toLocaleString('en-US', { minimumFractionDigits: 2 }); }
 function formatNumber(num) { return (parseInt(num) || 0).toLocaleString('en-US'); }
+function handleAuthError(res) { if (res.status === 401 || res.status === 403) handleLogout(); }
+
 function showToast(msg, err=false) {
     const toast = document.getElementById("toast");
     if(!toast) return;
@@ -1210,23 +1320,17 @@ function showToast(msg, err=false) {
     setTimeout(() => toast.className = "toast", 3000);
 }
 
-// --- RECEIPT MODAL ---
+// --- RECEIPT & MODAL LOGIC ---
 function showReceipt(saleRecord, isVoidMode = false) {
     const modal = document.getElementById('receipt-modal');
-    const content = document.getElementById('receipt-content');
-    const header = content.firstElementChild; 
-    const title = header.querySelector('h2');
-    const footer = content.lastElementChild; 
-    
     document.getElementById('rec-id').innerText = '#' + saleRecord.id;
     document.getElementById('rec-date').innerText = 'Date: ' + saleRecord.date;
     document.getElementById('rec-total').innerText = formatMoney(saleRecord.total);
-    
     const itemsContainer = document.getElementById('rec-items');
     itemsContainer.innerHTML = '';
     (saleRecord.details || []).forEach(item => {
         itemsContainer.innerHTML += `
-            <div class="flex justify-between text-sm py-1 border-b border-gray-100">
+            <div class="flex justify-between text-xs py-1 border-b border-gray-100">
                 <div class="flex flex-col w-2/3">
                     <span class="text-gray-800 font-medium truncate">${item.name}</span>
                     <span class="text-xs text-gray-500">x${item.qty} @ ${formatMoney(item.price)}</span>
@@ -1234,13 +1338,13 @@ function showReceipt(saleRecord, isVoidMode = false) {
                 <span class="text-gray-900 font-mono font-medium">${formatMoney(item.price * item.qty)}</span>
             </div>`;
     });
-
+    const header = document.getElementById('receipt-content').firstElementChild;
+    const title = header.querySelector('h2');
+    const footer = document.getElementById('receipt-content').lastElementChild;
     const oldWarning = document.getElementById('void-warning');
     if(oldWarning) oldWarning.remove();
-
     header.className = 'p-4 text-center text-white'; 
     header.classList.remove('bg-slate-800', 'bg-red-700');
-
     if (isVoidMode) {
         header.classList.add('bg-red-700');
         title.innerText = "CONFIRM VOID";
@@ -1249,25 +1353,22 @@ function showReceipt(saleRecord, isVoidMode = false) {
         warning.className = "bg-red-50 border-l-4 border-red-500 p-4 mb-4 text-sm text-red-700";
         warning.innerHTML = "<p class='font-bold'>Warning: Irreversible Action</p><p>Items will return to inventory.</p>";
         itemsContainer.before(warning);
-        footer.innerHTML = `
-            <button onclick="closeReceipt()" class="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 font-semibold">Cancel</button>
-            <button onclick="confirmVoid(${saleRecord.id})" class="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-semibold">Confirm Void</button>`;
+        footer.innerHTML = `<button onclick="closeReceipt()" class="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 font-semibold">Cancel</button><button onclick="confirmVoid(${saleRecord.id})" class="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-semibold">Confirm Void</button>`;
     } else {
         header.classList.add('bg-slate-800');
         title.innerText = "BUILDMASTER";
-        footer.innerHTML = `
-            <button onclick="closeReceipt()" class="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 font-semibold">Close</button>
-            <button onclick="window.print()" class="flex-1 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 font-semibold flex items-center justify-center gap-2"><i class="fa-solid fa-print"></i> Print</button>`;
+        footer.innerHTML = `<button onclick="closeReceipt()" class="flex-1 px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 font-semibold no-print">Close</button><button onclick="printReceipt()" class="flex-1 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 font-semibold flex items-center justify-center gap-2 no-print"><i class="fa-solid fa-print"></i> Print Receipt</button>`;
     }
     modal.classList.remove('hidden');
-    void modal.offsetWidth; 
-    modal.classList.remove('opacity-0');
-    modal.querySelector('div').classList.remove('scale-95');
+    setTimeout(() => modal.classList.remove('opacity-0'), 10);
 }
 
 function closeReceipt() {
     const modal = document.getElementById('receipt-modal');
     modal.classList.add('opacity-0');
-    modal.querySelector('div').classList.add('scale-95');
-    setTimeout(() => { modal.classList.add('hidden'); }, 300);
+    setTimeout(() => modal.classList.add('hidden'), 300);
+}
+
+function printReceipt() {
+    setTimeout(() => window.print(), 250);
 }

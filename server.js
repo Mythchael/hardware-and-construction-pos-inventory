@@ -92,23 +92,62 @@ const authenticateToken = (req, res, next) => {
 };
 
 // --- AUTH ROUTES ---
+// --- Updated Login Route in server.js ---
 app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
-    db.get("SELECT * FROM users WHERE username = ?", [username], async (err, user) => {
-        if (err || !user) return res.status(400).json({ error: "User not found" });
-        const validPass = await bcrypt.compare(password, user.password);
-        if (!validPass) return res.status(400).json({ error: "Invalid password" });
-        const token = jwt.sign({ id: user.id, username: user.username, permissions: user.permissions }, SECRET_KEY, { expiresIn: '8h' });
-        res.cookie('auth_token', token, { httpOnly: true, maxAge: 8 * 60 * 60 * 1000 });
-        res.json({ success: true, username: user.username, permissions: JSON.parse(user.permissions) });
-    });
+    // JOIN with employees table to get name details
+    const sql = `
+        SELECT u.*, e.lname, e.fname, e.mname 
+        FROM users u 
+        LEFT JOIN employees e ON u.employee_id = e.id 
+        WHERE u.username = ?`;
+
+    db.get(`
+        SELECT users.*, employees.fname, employees.lname, employees.mname 
+        FROM users 
+        LEFT JOIN employees ON users.employee_id = employees.id 
+        WHERE users.username = ?`, 
+        [username], async (err, user) => {
+            if (err || !user) return res.status(400).json({ error: "User not found" });
+            
+            const validPass = await bcrypt.compare(password, user.password);
+            if (!validPass) return res.status(400).json({ error: "Invalid password" });
+
+            // Format the name: Last, First M.
+            const mi = user.mname ? ` ${user.mname.charAt(0)}.` : "";
+            const fullName = user.lname ? `${user.lname}, ${user.fname}${mi}` : null;
+
+            const token = jwt.sign({ 
+                id: user.id, 
+                username: user.username, 
+                permissions: user.permissions,
+                displayName: fullName // Store formatted name in token
+            }, SECRET_KEY, { expiresIn: '8h' });
+
+            res.cookie('auth_token', token, { httpOnly: true, maxAge: 8 * 60 * 60 * 1000 });
+            res.json({ 
+                success: true, 
+                username: user.username, 
+                displayName: fullName, 
+                permissions: JSON.parse(user.permissions) 
+            });
+        }
+    );
 });
+
 app.post('/api/logout', (req, res) => { res.clearCookie('auth_token'); res.json({ success: true }); });
+
 app.get('/api/check-auth', authenticateToken, (req, res) => {
     let perms = req.user.permissions;
     if (typeof perms === 'string') { try { perms = JSON.parse(perms); } catch (e) { perms = []; } }
-    res.json({ username: req.user.username, permissions: perms });
+    
+    res.json({ 
+        username: req.user.username, 
+        displayName: req.user.displayName, // Retrieve from verified token
+        permissions: perms 
+    });
 });
+
 app.post('/api/verify-supervisor', async (req, res) => {
     const { username, password } = req.body;
     db.get("SELECT * FROM users WHERE username = ?", [username], async (err, user) => {
