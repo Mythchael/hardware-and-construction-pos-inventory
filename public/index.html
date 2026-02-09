@@ -6,8 +6,8 @@
     <title>BuildMaster - Hardware Inventory System</title>
     
     <script src="lib/tailwind.js"></script>
-    <link href="lib/fontawesome/css/all.min.css" rel="stylesheet">
-    
+    <script src="lib/chart.js/dist/chart.umd.js"></script>
+    <link href="lib/fontawesome/css/all.min.css" rel="stylesheet">    
     <link href="style.css" rel="stylesheet">
 </head>
 <body class="text-gray-800 h-screen flex flex-col overflow-hidden bg-gray-100">
@@ -82,8 +82,8 @@
             <header class="bg-white shadow-sm h-16 flex items-center justify-between px-6 z-10">
                 <h2 id="page-title" class="text-xl font-bold text-slate-700">Overview</h2>
                 <div class="flex items-center gap-4">
-                    <span id="current-user-display" class="text-sm font-bold text-slate-600">Admin</span>
-                    <div class="h-8 w-8 bg-orange-100 rounded-full flex items-center justify-center text-orange-600">
+                    <span id="current-user-display" class="font-bold text-slate-600 truncate max-w-xs" title="">Admin</span>
+                    <div class="h-8 w-8 bg-orange-100 rounded-full flex items-center justify-center text-orange-600 flex-shrink-0">
                         <i class="fa-solid fa-user"></i>
                     </div>
                 </div>
@@ -99,13 +99,13 @@
                             <p class="text-sm text-gray-500 uppercase font-semibold">Total Items</p>
                             <h3 class="text-3xl font-bold text-gray-800 mt-2" id="dash-total-items">0</h3>
                         </div>
-                        <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-emerald-500">
-                            <p class="text-sm text-gray-500 uppercase font-semibold">Inventory Value</p>
-                            <h3 class="text-3xl font-bold text-gray-800 mt-2" id="dash-total-value">₱0.00</h3>
+                        <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-green-500">
+                            <p class="text-sm text-gray-500 uppercase font-semibold">Total Sales</p>
+                            <h3 class="text-3xl font-bold text-gray-800 mt-2" id="dash-total-sales">₱0.00</h3>
                         </div>
                         <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-orange-500">
-                            <p class="text-sm text-gray-500 uppercase font-semibold">Total Revenue</p>
-                            <h3 class="text-3xl font-bold text-gray-800 mt-2" id="dash-total-sales">₱0.00</h3>
+                            <p class="text-sm text-gray-500 uppercase font-semibold">Inventory Value</p>
+                            <h3 class="text-3xl font-bold text-gray-800 mt-2" id="dash-total-value">₱0.00</h3>
                         </div>
                         <div class="bg-white p-6 rounded-xl shadow-sm border-l-4 border-red-500">
                             <p class="text-sm text-gray-500 uppercase font-semibold">Low Stock Items</p>
@@ -113,7 +113,41 @@
                         </div>
                     </div>
 
-                    <!-- Low Stock Alert Section -->
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        
+                        <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2">
+                                <h3 class="font-bold text-slate-700">Sales Analytics</h3>
+                                <div class="flex gap-2">
+                                    <select id="chart-trend-mode" onchange="renderTrendChart()" class="text-xs border border-gray-300 rounded px-2 py-1 bg-gray-50 outline-none focus:border-blue-500">
+                                        <option value="weekly">Weekly</option>
+                                        <option value="monthly">Monthly</option>
+                                        <option value="yearly">Yearly</option>
+                                    </select>
+                                    <input type="date" id="chart-trend-date" onchange="renderTrendChart()" class="text-xs border border-gray-300 rounded px-2 py-1 bg-gray-50 outline-none focus:border-blue-500">
+                                </div>
+                            </div>
+                            <div class="h-[300px] w-full relative">
+                                <canvas id="salesChart"></canvas>
+                            </div>
+                        </div>
+
+                        <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2">
+                                <h3 class="font-bold text-slate-700">Category Performance</h3>
+                                <div class="flex gap-2 items-center">
+                                    <span class="text-[10px] text-gray-400 uppercase font-bold">Filter:</span>
+                                    <input type="date" id="chart-cat-date" onchange="renderCategoryChart()" class="text-xs border border-gray-300 rounded px-2 py-1 bg-gray-50 outline-none focus:border-blue-500">
+                                    <button onclick="resetCategoryChart()" class="text-xs text-blue-500 hover:text-blue-700" title="Reset to Current Inventory"><i class="fa-solid fa-refresh"></i></button>
+                                </div>
+                            </div>
+                            <div class="h-[300px] w-full relative">
+                                <canvas id="categoryChart"></canvas>
+                            </div>
+                            <p id="cat-chart-label" class="text-center text-xs text-gray-400 mt-2">Showing: Current Inventory Levels</p>
+                        </div>
+                    </div>
+
                     <div class="bg-white rounded-xl shadow-sm overflow-hidden">
                         <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center">
                             <h3 class="font-bold text-lg text-gray-800">Critical Stock Alerts (< 10 units)</h3>
@@ -399,15 +433,21 @@
     <!-- Receipt Modal -->
     <div id="receipt-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center backdrop-blur-sm opacity-0 transition-opacity duration-300">
         <div class="bg-white rounded-lg shadow-2xl w-full max-w-sm p-0 overflow-hidden transform scale-95 transition-transform duration-300" id="receipt-content">
+            
             <div class="bg-slate-800 text-white p-4 text-center">
                 <h2 class="text-xl font-bold tracking-wider">BUILDMASTER</h2>
+                <p class="text-[10px] uppercase opacity-80 no-screen print:block hidden">123 Hardware Lane, San Jose<br>Occidental Mindoro</p>
             </div>
+
             <div class="p-6 space-y-4">
                 <div class="text-center border-b border-dashed border-gray-300 pb-4">
                     <p class="font-mono font-bold text-lg text-gray-800" id="rec-id">#0000</p>
                     <p class="text-xs text-gray-400" id="rec-date">Date: --/--/----</p>
                 </div>
-                <div class="space-y-2 max-h-64 overflow-y-auto pr-1" id="rec-items"></div>
+                
+                <div class="space-y-2 max-h-64 overflow-y-auto pr-1 scroller" id="rec-items">
+                    </div>
+
                 <div class="border-t border-dashed border-gray-300 pt-4 space-y-2">
                     <div class="flex justify-between font-bold text-xl text-slate-800">
                         <span>Total</span>
@@ -415,11 +455,11 @@
                     </div>
                 </div>
             </div>
+
             <div class="bg-gray-50 p-4 border-t border-gray-100 flex gap-3 no-print">
-                <!-- JS Injected -->
-            </div>
-        </div>
-    </div>
+                </div>
+
+    </div> </div>
 
     <!-- Activity Modal -->
     <div id="activity-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center backdrop-blur-sm opacity-0 transition-opacity duration-300">
@@ -557,6 +597,11 @@
                 <button onclick="processVoidAuth()" class="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-semibold transition shadow-md">Authorize Void</button>
             </div>
         </div>
+    </div>
+
+    <div id="loading-overlay" class="fixed inset-0 bg-slate-900/50 backdrop-blur-[2px] z-[100] hidden flex flex-col items-center justify-center">
+        <div class="w-12 h-12 border-4 border-slate-300 border-t-orange-500 rounded-full animate-spin"></div>
+        <p class="mt-4 text-white font-bold tracking-wide">Processing...</p>
     </div>
 
     <div id="toast" class="toast">Operation Successful</div>
