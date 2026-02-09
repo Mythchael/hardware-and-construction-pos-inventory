@@ -551,10 +551,21 @@
 
     <!-- View Employee Modal -->
     <div id="view-emp-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center backdrop-blur-sm opacity-0 transition-opacity duration-300">
-        <div class="bg-white rounded-lg shadow-2xl w-full max-w-2xl p-6 transform scale-95 transition-transform duration-300 relative">
-            <button onclick="closeViewEmpModal()" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fa-solid fa-times text-2xl"></i></button>
-            <div id="view-emp-content" class="flex gap-6">
+        <div class="bg-white rounded-lg shadow-2xl w-full max-w-2xl p-0 overflow-hidden transform scale-95 transition-transform duration-300">
+            <!-- New Header Section -->
+            <div class="bg-slate-800 text-white p-4 flex justify-between items-center">
+                <h2 class="text-lg font-bold">Employee Details</h2>
+                <button onclick="closeViewEmpModal()" class="text-white hover:text-gray-300"><i class="fa-solid fa-times text-xl"></i></button>
+            </div>
+            
+            <!-- Content Body -->
+            <div id="view-emp-content" class="p-6 flex gap-6">
                 <!-- Populated by JS -->
+            </div>
+            
+            <!-- Footer -->
+            <div class="bg-gray-50 p-4 border-t border-gray-100 text-right">
+                <button onclick="closeViewEmpModal()" class="px-6 py-2 bg-slate-700 text-white rounded-lg hover:bg-slate-800 font-semibold text-sm transition shadow-sm">Close</button>
             </div>
         </div>
     </div>
@@ -606,6 +617,6 @@
 
     <div id="toast" class="toast">Operation Successful</div>
 
-    <script src="script.js"></script>
+    <script type="module" src="js/main.js"></script>
 </body>
 </html>
